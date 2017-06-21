@@ -76,7 +76,7 @@ if len (sys.argv) < 2 or sys.argv[1] not in ops:
     raise SystemExit
 
 prefix = None
-gtkver = "3.0"
+gtkver = "2.0"
 if len (sys.argv) > 2:
     i = 0
     for o in sys.argv:
