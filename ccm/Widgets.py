@@ -20,10 +20,17 @@
 #          Christopher Williams (christopherw@verizon.net)
 #          Sorokin Alexei (sor.alexei@meowr.ru)
 #          Wolfgang Ulbrich (chat-to-me@raveit.de)
+#          Igor An. Berezhnov (Vinnie) (igorberezhnov@yandex.ru)
 # Copyright (C) 2007 Quinn Storm
 
 from gi.repository import GObject, GLib, Gtk
-from gi.repository import Gdk, GdkPixbuf, PangoCairo, Rsvg
+from gi.repository import Gdk, Gio, GdkPixbuf, PangoCairo, Rsvg
+try:
+    from gi.repository import MateDesktop
+    has_mate_desktop = True
+except ImportError:
+    has_mate_desktop = False
+
 import cairo
 from collections import OrderedDict
 from math import pi, sqrt
@@ -34,6 +41,10 @@ import subprocess
 import sys
 import mimetypes
 mimetypes.init()
+import threading
+
+from xml.dom import minidom
+from enum import Enum
 
 from ccm.Utils import *
 from ccm.Constants import *
@@ -45,6 +56,105 @@ locale.setlocale(locale.LC_ALL, "")
 gettext.bindtextdomain("ccsm", DataDir + "/locale")
 gettext.textdomain("ccsm")
 _ = gettext.gettext
+
+STORE_MODEL_STRUCTURE = (
+    GdkPixbuf.Pixbuf,
+    str, str, str)
+
+(COL_ICON_128,
+ COL_INFOTEXT,
+ COL_URI,
+ COL_INFO) = range(len(STORE_MODEL_STRUCTURE))
+
+class BgPlacement(Enum):
+    SCALED_CROP = 0
+    SCALED = 1
+    CENTERED = 2
+    TILED = 3
+    ZOOMED = 4
+
+LARGE_SIZE = 96
+MEDIUM_SIZE = 64
+
+type_map = {
+    'image/png' : _('PNG image'),
+    'image/jpeg' : _('JPEG image'),
+    'image/svg+xml' : _('SVG image')
+}
+graphics_exts = [".jpg", ".jpeg", ".png", ".svg"]
+
+def getNodeText(node):
+    nodelist = node.childNodes
+    result = []
+    for node in nodelist:
+        if node.nodeType == node.TEXT_NODE:
+            result.append(node.data)
+    return ''.join(result)
+
+def get_normalized_name(path):
+    if len(path)>0:
+      imgpath = path
+      if not os.path.isfile(imgpath):
+         imgpath = os.path.join(GLib.get_user_config_dir(), HomeImageDir, path)
+         if not os.path.isfile(imgpath):
+            imgpath = os.path.join(ImageDir, path)
+            if not os.path.isfile(imgpath):
+               imgpath = None
+    else:
+       imgpath = None
+    return imgpath
+
+def get_thumb_annotations (thumb, filename):
+   orig_width  = 0
+   orig_height = 0
+   if thumb:
+      wstr = thumb.get_option ("tEXt::Thumb::Image::Width");
+      hstr = thumb.get_option ("tEXt::Thumb::Image::Height");
+      if hstr and wstr:
+         try:
+            orig_width  = long(wstr)
+            orig_height = long(hstr)
+         except:
+            pass
+   if orig_width == 0 or orig_height == 0:
+        format, orig_width, orig_height = GdkPixbuf.Pixbuf.get_file_info(filename)
+   return orig_width, orig_height
+
+def get_image_thumbnail(path, thumbnailer):
+        if not os.path.splitext(path)[1] in graphics_exts:
+           return [None, None]
+        imgpath = get_normalized_name(path)
+        if not imgpath:
+           return [None, None]
+
+        file = Gio.file_new_for_path(imgpath)
+        uri = file.get_uri()
+        path = file.get_path()
+        info = file.query_info(attributes="*",
+                                flags=Gio.FileQueryInfoFlags.NONE,
+                                cancellable=None)
+        mime_type = info.get_attribute_as_string(Gio.FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        mtime = info.get_attribute_uint64(Gio.FILE_ATTRIBUTE_TIME_MODIFIED)
+        thumb_128 = None
+        thumb_64  = None
+        if thumbnailer:
+           existing_thumbnail = thumbnailer.lookup(uri, mtime)
+        else:
+           existing_thumbnail = info.get_attribute_byte_string(Gio.FILE_ATTRIBUTE_THUMBNAIL_PATH)
+        if existing_thumbnail:
+           image = Gtk.Image.new_from_file(existing_thumbnail)
+           if image:
+              thumb_128 = image.get_pixbuf()
+        elif thumbnailer:
+           if thumbnailer.can_thumbnail(uri, mime_type, mtime):
+              thumb_128 = thumbnailer.generate_thumbnail(uri, mime_type)
+              if thumb_128:
+                 thumbnailer.save_thumbnail(thumb_128, uri, mtime)
+              else:
+                 thumbnailer.create_failed_thumbnail(uri, mtime)
+           else:
+              thumbnailer.create_failed_thumbnail(uri, mtime)
+        return [thumb_128, info]
 
 #
 # Try to use gtk like coding style for consistency
@@ -217,6 +327,73 @@ class CellRendererColor(Gtk.CellRenderer):
             Gdk.cairo_rectangle(cr, expose_area)
             cr.clip()
             self._render(cr, widget, background_area, cell_area, flags)
+
+
+class CellRendererImage(Gtk.CellRendererPixbuf):
+    if GLIB_VERSION >= (2, 42, 0):
+        __gproperties__ = {
+            'text': (GObject.TYPE_STRING,
+                    'image path',
+                    'The path to the image file',
+                    '',
+                    GObject.ParamFlags.READWRITE)
+        }
+    else:
+        __gproperties__ = {
+            'text': (GObject.TYPE_STRING,
+                    'image path',
+                    'The path to the image file',
+                    '',
+                    GObject.PARAM_READWRITE)
+       }
+
+    _text  = ''
+
+    def __init__(self):
+        Gtk.CellRendererPixbuf.__init__(self)
+        self._theme = Gtk.IconTheme.get_default()
+        self.file_icon = self._theme.load_icon(Gtk.STOCK_FILE, MEDIUM_SIZE, 0)
+
+        if has_mate_desktop:
+            size_normal = MateDesktop.DesktopThumbnailSize.NORMAL
+            self.thumbnailer = MateDesktop.DesktopThumbnailFactory.new(size_normal)
+        else:
+            self.thumbnailer = None
+
+    def _parse_pixmap(self):
+        thumb_64 = None
+        name = get_normalized_name(self._text)
+        if name:
+           thumb_128, info = get_image_thumbnail(name, self.thumbnailer)
+           if not thumb_128:
+              icon = None
+              if info:
+                 icon = info.get_icon()
+              if icon:
+                 icon_info = self._theme.lookup_by_gicon(icon, MEDIUM_SIZE, Gtk.IconLookupFlags(0))
+                 if icon_info:
+                    thumb_64 = icon_info.load_icon()
+              else:
+                 thumb_64 = self.file_icon
+           else:
+              w, h = thumb_128.get_width(), thumb_128.get_height()
+              thumb_64 = thumb_128.scale_simple(w/2, h/2, GdkPixbuf.InterpType.BILINEAR)
+
+        self.set_property('pixbuf', thumb_64)
+
+    def do_set_property(self, property, value):
+        if property.name == 'text':
+            self._text = value
+            self._parse_pixmap()
+        else:
+            raise AttributeError("unknown property %s" % property.name)
+
+    def do_get_property(self, property):
+        if property.name == 'text':
+            return self._text
+        else:
+            raise AttributeError("unknown property %s" % property.name)
+
 
 class PluginView(Gtk.TreeView):
     def __init__(self, plugins):
@@ -1638,12 +1815,8 @@ class FileButton (Gtk.Button):
         self._path = path
 
         self.set_tooltip_text(_("Browse..."))
-        if self._directory:
-            self.set_image(Gtk.Image.new_from_icon_name("folder-open",
-                                                        Gtk.IconSize.BUTTON))
-        else:
-            self.set_image(Gtk.Image.new_from_icon_name("document-open",
-                                                        Gtk.IconSize.BUTTON))
+        self.set_image(Gtk.Image.new_from_icon_name("document-open",
+                                                    Gtk.IconSize.BUTTON))
         self.connect('clicked', self.open_dialog)
 
     def set_path (self, value):
@@ -1741,31 +1914,36 @@ class FileButton (Gtk.Button):
 class AboutDialog (Gtk.AboutDialog):
     NAME = _("CompizConfig Settings Manager")
     VERSION = Version
-    LOGO = "ccsm"
+    LOGO = "%s/about-ccsm.png" % PixmapDir
     COMMENTS = _("This is a settings manager for the CompizConfig configuration system.")
-    COPYRIGHT = u"Copyright \xA9 2007-2008 Patrick Niklaus/Christopher Williams/Guillaume Seguin/Quinn Storm"
+    COPYRIGHT = u"Copyright \xA9 2007-2008 Patrick Niklaus/Christopher Williams/Guillaume Seguin/Quinn Storm/Vinnie"
     AUTHORS = ["Patrick Niklaus <patrick.niklaus@student.kit.edu>",
                "Christopher Williams <christopherw@verizon.net>",
                "Guillaume Seguin <guillaume@segu.in>",
                "Quinn Storm <livinglatexkali@gmail.com>",
-               "Alexei Sorokin <sor.alexei@meowr.ru>"]
+               "Alexei Sorokin <sor.alexei@meowr.ru>",
+               "Vinnie <igorberezhnov@yandex.ru>"]
     ARTISTS = ["Andrew Wedderburn <andrew.wedderburn@gmail.com>",
                "Patrick Niklaus <patrick.niklaus@student.kit.edu>",
                "GNOME Icon Theme Team"]
     TRANSLATOR_CREDITS = _("translator-credits")
-    WEBSITE = "https://github.com/compiz-reloaded/ccsm"
+    WEBSITE = "https://launchpad.net/~igorberezhnov/+archive/ubuntu/compiz-fusion-vinnie"
 
     def __init__ (self, parent):
         Gtk.AboutDialog.__init__ (self, transient_for=parent,
                                   program_name=AboutDialog.NAME,
                                   version=AboutDialog.VERSION,
-                                  logo_icon_name=AboutDialog.LOGO,
                                   comments=AboutDialog.COMMENTS,
                                   copyright=AboutDialog.COPYRIGHT,
                                   authors=AboutDialog.AUTHORS,
                                   artists=AboutDialog.ARTISTS,
                                   translator_credits=AboutDialog.TRANSLATOR_CREDITS,
                                   website=AboutDialog.WEBSITE)
+
+        icon = Gtk.Image()
+        icon.set_from_file(AboutDialog.LOGO)
+
+        self.set_logo (icon.get_pixbuf())
 
         if GTK_VERSION >= (3, 0, 0):
             self.set_license_type (Gtk.License.GPL_2_0)
@@ -1824,6 +2002,8 @@ class PluginButton (Gtk.Box):
                                       [])}
 
     _plugin = None
+    _image  = None
+    _markup = ""
 
     def __init__ (self, plugin, useMissingImage = False):
         Gtk.Box.__init__(self)
@@ -1837,9 +2017,12 @@ class PluginButton (Gtk.Box):
         box.pack_start (image, False, False, 0)
         box.pack_start (label, True, True, 0)
 
+        self._image = image
         button = PrettyButton ()
         button.connect ('clicked', self.show_plugin_page)
-        button.set_tooltip_text (plugin.LongDesc)
+        button.connect ('query-tooltip', self.query_tooltip_callback)
+        button.props.has_tooltip = True
+        self._markup = "<b>%s</b>\n<small>%s</small>" % (plugin.ShortDesc, plugin.LongDesc)
         button.add (box)
 
         blacklist_plugins = ['core']
@@ -1899,6 +2082,11 @@ class PluginButton (Gtk.Box):
 
     def get_plugin (self):
         return self._plugin
+
+    def query_tooltip_callback (self, widget, x, y, keyboard_mode, tooltip):
+        tooltip.set_icon (self._image.get_pixbuf())
+        tooltip.set_markup(self._markup)
+        return True
 
 # Category Box
 #
@@ -2034,6 +2222,238 @@ class CategoryBox(Gtk.Box):
 
     def get_unfiltered_plugins (self):
         return self._unfiltered_plugins
+
+# Wallpaper Window
+#
+class WallpaperPeekWindow(Gtk.ScrolledWindow):
+    def __init__(self, name, SelectionHandler=None, Dlg=None):
+        Gtk.ScrolledWindow.__init__(self)
+        self.CurrentName = name
+        self.props.height_request = 300
+        self.CurrentIter = None
+        self._missing_thumbs = []
+        self._theme = Gtk.IconTheme.get_default()
+        self.file_icon = self._theme.load_icon(Gtk.STOCK_FILE, LARGE_SIZE, 0)
+        self.syslangs = GLib.get_language_names()
+        self.SelectionHandler = SelectionHandler
+        self.Dlg = Dlg
+
+        self.props.hscrollbar_policy = Gtk.PolicyType.NEVER
+        self.props.vscrollbar_policy = Gtk.PolicyType.AUTOMATIC
+
+        self.store = Gtk.ListStore(*STORE_MODEL_STRUCTURE)
+        self.store.set_sort_column_id(0, Gtk.SortType.ASCENDING)
+        self.store.set_sort_func(0, self.list_compare_func, None)
+
+        self.view = Gtk.IconView(model=self.store)
+        self.view.set_item_orientation(Gtk.Orientation.VERTICAL)
+        self.view.set_property("has_tooltip", True)
+        self.view.set_tooltip_column(COL_INFO)
+        self.view.props.item_padding = 10
+        self.view.props.margin = 3
+        self.view_cursor_pos = None
+
+        cell = Gtk.CellRendererPixbuf()
+        self.view.pack_start(cell, False)
+        self.view.add_attribute(cell, "pixbuf", COL_ICON_128)
+        self.view.connect('selection-changed', self.SelectionChanged)
+        self.view.connect('button-press-event', self.ButtonPressEvent)
+
+        cell = Gtk.CellRendererText()
+        cell.props.alignment = Pango.Alignment.CENTER
+        cell.props.xalign = 0.0
+        cell.props.yalign = 0.0
+        cell.props.xpad = 0
+        cell.props.ypad = 0
+        cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+        self.view.pack_start(cell, False)
+        self.view.add_attribute(cell, "markup", COL_INFOTEXT)
+
+        self.add(self.view)
+
+        self.view.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        if has_mate_desktop:
+            size_normal = MateDesktop.DesktopThumbnailSize.NORMAL
+            self.thumbnailer = MateDesktop.DesktopThumbnailFactory.new(size_normal)
+        else:
+            self.thumbnailer = None
+        bgdir = os.path.join(GLib.get_user_config_dir(), HomeBGPropsDir)
+        if os.path.isfile(bgdir):
+           self.LoadFromXML(bgdir)
+        bgdir = BGPropsDir
+        if os.path.isdir(bgdir):
+            for filename in os.listdir(bgdir):
+               if filename.endswith('.xml'):
+                  tmpname=os.path.join(bgdir, filename)
+                  if os.path.isfile(tmpname):
+                     self.LoadFromXML(tmpname)
+        if self.CurrentIter:
+           path = self.store.get_path(self.CurrentIter)
+           if path:
+              self.view.select_path(path)
+        self.Dlg.connect_after('show', self.start_thumbs)
+
+    def start_thumbs(self, widget):
+        selitems = self.view.get_selected_items()
+        if len(selitems)>0:
+            self.view.scroll_to_path(selitems[0], True, 0.5, 0)
+
+        missing_thumbs = self._missing_thumbs
+        self._missing_thumbs = []
+        if missing_thumbs:
+           self._thumbs_process = threading.Thread( \
+                 target=WallpaperPeekWindow.generateThumbnailsThread, \
+                 args=(self, missing_thumbs))
+           self._thumbs_process.start()
+        return False
+
+    def generateThumbnailsThread(self, missing_thumbs):
+        for full_path in missing_thumbs:
+            pixbuf_128 = self._generateThumbnails(full_path)
+            if not pixbuf_128:
+                continue
+            found = False
+            for row in self.store:
+                if full_path.encode("utf-8") == row[COL_URI]:
+                    found = True
+                    row[COL_ICON_128] = pixbuf_128
+                    break
+
+    def _generateThumbnails(self, full_path):
+        file = Gio.file_new_for_path(full_path)
+        uri = file.get_uri()
+        path = file.get_path()
+
+        info = file.query_info(attributes="*",
+                                flags=Gio.FileQueryInfoFlags.NONE,
+                                cancellable=None)
+        mime_type = info.get_attribute_as_string(Gio.FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        mtime = info.get_attribute_uint64(Gio.FILE_ATTRIBUTE_TIME_MODIFIED)
+
+        thumb_128 = None
+        if self.thumbnailer:
+            mime_type = info.get_attribute_as_string(Gio.FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+            if self.thumbnailer.can_thumbnail(uri, mime_type, mtime):
+                thumb_128 = self.thumbnailer.generate_thumbnail(uri, mime_type)
+                if thumb_128:
+                   self.thumbnailer.save_thumbnail(thumb_128, uri, mtime)
+                else:
+                   self.thumbnailer.create_failed_thumbnail(uri, mtime)
+            else:
+                self.thumbnailer.create_failed_thumbnail(uri, mtime)
+        return thumb_128
+
+    def list_compare_func(self, treemodel, iter1, iter2, user_data):
+        a = self.store.get(iter1, 1, 1)
+        b = self.store.get(iter2, 1, 1)
+        if a[0] == b[0]:
+            return 0
+        if a[0] < b[0]:
+            return -1
+        else:
+            return 1
+
+    def SelectionChanged(self, selection):
+        sel = selection.get_selected_items()
+        if len(sel)>0:
+           for path in sel:
+              selected_iter = self.store.get_iter(path)
+              self.CurrentName = self.store.get_value(selected_iter, COL_URI)
+              if self.SelectionHandler:
+                 self.SelectionHandler(self.CurrentName)
+        else:
+           if self.SelectionHandler:
+              self.SelectionHandler(None)
+
+    def ButtonPressEvent(self, listview, event):
+        if event.button == 1 and event.type == getattr(Gdk.EventType, '2BUTTON_PRESS'):
+            pthinfo = listview.get_path_at_pos(int(event.x), int(event.y))
+            if pthinfo is not None:
+                if self.Dlg:
+                   self.Dlg.response(Gtk.ResponseType.OK)
+            return True
+
+    def LoadFromXML(self, file_path):
+        doc = minidom.parse(file_path)
+        nodelist = doc.documentElement.childNodes
+        for node in nodelist:
+           if node.nodeName == "wallpaper":
+              deleted = node.getAttribute("deleted")
+              url  = ""
+              name = None
+              artist = ""
+              for wpa in node.childNodes:
+                 if wpa.nodeType == minidom.Node.COMMENT_NODE:
+                    continue
+                 elif wpa.nodeName == "filename":
+                    url = getNodeText(wpa)
+                 elif wpa.nodeName == "artist":
+                    artist = getNodeText(wpa)
+                 elif wpa.nodeName == "name":
+                    curlang = wpa.getAttribute("xml:lang")
+                    if curlang:
+                       for lang in self.syslangs:
+                          if curlang == lang:
+                             name = getNodeText(wpa)
+                    elif name == None:
+                       name = getNodeText(wpa)
+
+              if not name:
+                 if len(url)>0:
+                    name = os.path.split(url)[1]
+              if name != None and len(name)>0 and os.path.isfile(url) \
+                      and deleted != "true" and os.path.splitext(url)[1] in graphics_exts:
+                 self._addUri(url, name, artist)
+
+    def _addUri(self, full_path, name, artist):
+        file = Gio.file_new_for_path(full_path)
+        uri = file.get_uri()
+        path = file.get_path()
+        for row in self.store:
+            if row[2] == path:
+                return
+
+        info = file.query_info(attributes="*",
+                                flags=Gio.FileQueryInfoFlags.NONE,
+                                cancellable=None)
+        mime_type = info.get_attribute_as_string(Gio.FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        mtime = info.get_attribute_uint64(Gio.FILE_ATTRIBUTE_TIME_MODIFIED)
+        thumb_128 = None
+        width, height = 0, 0
+        if self.thumbnailer:
+            existing_thumbnail = self.thumbnailer.lookup(uri, mtime)
+        else:
+            existing_thumbnail = info.get_attribute_byte_string(Gio.FILE_ATTRIBUTE_THUMBNAIL_PATH)
+        if existing_thumbnail:
+            image = Gtk.Image.new_from_file(existing_thumbnail)
+            if image:
+                thumb_128 = image.get_pixbuf()
+                width, height = get_thumb_annotations (thumb_128, path)
+        else:
+            self._missing_thumbs.append(full_path)
+            icon = info.get_icon()
+            if icon:
+               icon_info = self._theme.lookup_by_gicon(icon, LARGE_SIZE, Gtk.IconLookupFlags(0))
+               if icon_info:
+                  thumb_128 = icon_info.load_icon()
+            if not thumb_128:
+               thumb_128 = self.file_icon
+            width, height = get_thumb_annotations (None, path)
+
+        size = _("%(width)s pixels by %(height)s pixels") % {'width': width, 'height': height}
+
+        msg_dict = {'name': name.encode("utf-8"),
+                    'size': size,
+                    'mime': type_map.get(mime_type,_("unknown")),
+                    'folder': os.path.split(path)[0],
+                    'artist': artist.encode("utf-8")}
+
+        msg = _("<b>%(name)s</b>\n%(mime)s, %(size)s\nFolder: %(folder)s\nArtist: %(artist)s") % msg_dict
+
+        iter = self.store.append([thumb_128, name, path, msg])
+        if self.CurrentName == path:
+           self.CurrentIter = iter
+
 
 # Plugin Window
 #

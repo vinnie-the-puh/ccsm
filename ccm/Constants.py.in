@@ -63,6 +63,12 @@ IconDir = (DataDir + "/ccsm/icons",
            DataDir + "/compiz/icons",
            GLib.get_home_dir() + "/.compiz/icons")
 PixmapDir = DataDir + "/ccsm/images"
+ImageDir = DataDir + "/compiz"
+HomeImageDir = ".compiz/images"
+HomeCursorDir = ".icons"
+CursorDir = DataDir + "/icons"
+BGPropsDir = DataDir + "/mate-background-properties/"
+HomeBGPropsDir = "mate/backgrounds.xml"
 
 # Version
 #

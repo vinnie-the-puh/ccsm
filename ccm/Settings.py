@@ -21,7 +21,7 @@
 #          Sorokin Alexei (sor.alexei@meowr.ru)
 # Copyright (C) 2007 Quinn Storm
 
-from gi.repository import GObject, Gtk, Gdk
+from gi.repository import GObject, Gtk, Gdk, GLib
 from gi.repository import Pango, PangoCairo
 import os
 
@@ -30,15 +30,18 @@ from ccm.Conflicts import *
 from ccm.Widgets import *
 from ccm.Utils import *
 from ccm.Pages import *
+from ccm.Cursors import *
 
 import locale
 import gettext
+
 locale.setlocale(locale.LC_ALL, "")
 gettext.bindtextdomain("ccsm", DataDir + "/locale")
 gettext.textdomain("ccsm")
 _ = gettext.gettext
 
 NAItemText = _("N/A")
+
 
 class Setting(object):
 
@@ -234,93 +237,137 @@ class MatchSetting(StringSetting):
         self.Box.pack_start(self.MatchButton, False, False, 0)
 
 class FamilyStringSetting(StockSetting):
-    FontModel = None
-
-    @classmethod
-    def _setupFontModel(cls):
-        if FamilyStringSetting.FontModel:
-            FamilyStringSetting.clear()
-        else:
-            FamilyStringSetting.FontModel = Gtk.ListStore(GObject.TYPE_STRING)
-        families = PangoCairo.font_map_get_default().list_families()
-        for f in sorted(families, key=lambda x: x.get_name()):
-            FamilyStringSetting.FontModel.append([f.get_name()])
-
     def _Init(self):
         StockSetting._Init(self)
-        if not FamilyStringSetting.FontModel:
-            FamilyStringSetting._setupFontModel()
 
-        self.FontModel = FamilyStringSetting.FontModel
-        self.ComboFonts = Gtk.ComboBox.new_with_model_and_entry(FamilyStringSetting.FontModel)
-        self.ComboFonts.set_entry_text_column(0)
-        self.FontCompletion = Gtk.EntryCompletion()
-        self.FontCompletion.set_model(model=FamilyStringSetting.FontModel)
-        try:
-            self.FontCompletion.set_text_column(0)
-        except (AttributeError, TypeError):
-            pass
-
-        self.ComboFonts.get_child().set_completion(self.FontCompletion)
         self.PreviewEntry = Gtk.Entry()
-        self.PreviewEntry.set_text("ABCDGEFG abcdefg")
-        self.ComboFonts.connect('changed', self.Changed)
-        self.ComboFonts.get_child().connect('changed', self.updatePreviewEntry, self.PreviewEntry)
-        self.ComboFonts.get_child().connect('activate', self.Changed)
-        self.ComboFonts.get_child().connect('focus-out-event', self.Changed)
+        self.PreviewEntry.set_text(_("The Quick Brown Fox Jumps Over The Lazy Dog"))
+        self.PreviewEntry.set_property("editable", False)
+
+        self.font_button = Gtk.FontButton()
+        self.font_button.set_use_font(True)
+        self.font_button.set_show_size(True)
+        self.font_button.set_use_size(False)
+        self.font_button.connect('font-set', self.Changed)
         self.Box.pack_start(self.PreviewEntry, True, True, 0)
-        self.Box.pack_start(self.ComboFonts, False, False, 0)
+        self.Box.pack_start(self.font_button, False, False, 0)
 
     def DoReset(self, foo):
         StockSetting.DoReset(self, foo)
-        self.PreviewEntry.set_text("ABCDGEFG abcdefg")
 
     def _Read(self):
-        self.ComboFonts.get_child().set_text(self.Get())
+        self.font_button.set_font_name(self.Get())
+        self._Changed()
 
     def _Changed(self):
-        self.Set(self.ComboFonts.get_child().get_text())
-
-    def updatePreviewEntry(self, entry, previewWidget):
-        if GTK_VERSION >= (3, 0, 0):
-            style = previewWidget.get_style_context()
-            style_provider = Gtk.CssProvider()
-            style_provider.load_from_data(("* { font-family: \"%s\"; }" %
-                                           entry.get_text()).encode())
-            style.add_provider(style_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        font_button = self.font_button
+        CurrFont = font_button.get_font_name()
+        font_desc = Pango.FontDescription(CurrFont)
+        if Gtk.check_version(3, 0, 0) is None:
+            tmpStyle = self.PreviewEntry.get_style_context()
+            fd = tmpStyle.get_property("font", tmpStyle.get_state()).copy()
         else:
-            style = previewWidget.get_style()
-            fd = style.font_desc.copy()
-            fd.set_family(entry.get_text())
-            previewWidget.modify_font(fd)
+            tmpStyle = self.PreviewEntry.get_style()
+            fd = tmpStyle.font_desc.copy()
+
+        fd.set_family(font_desc.get_family())
+        fd.set_style(font_desc.get_style())
+        fd.set_weight(font_desc.get_weight())
+
+        if GTK_VERSION >= (3, 0, 0):
+            self.PreviewEntry.override_font(fd)
+        else:
+            self.PreviewEntry.modify_font(fd)
+
+        self.Set(CurrFont)
 
 class FileStringSetting(StringSetting):
-    FILE = 0
-    DIRECTORY = 1
-    PATH = 2
 
-    def __init__(self, setting, List=False, isImage=False, pickMode=0):
+    def __init__(self, setting, List=False, isImage=False, isDirectory=False):
         self.isImage = isImage
-        self.pickMode = pickMode
+        self.isDirectory = isDirectory
         StringSetting.__init__(self, setting, List=List)
 
     def _Init(self):
+        self.Msg = ""
         StringSetting._Init(self)
-        if self.pickMode == FileStringSetting.PATH:
-            self.FileButton = FileButton(self.Setting.Plugin.Context,
-                                         self.Entry,
-                                         False, self.isImage)
-            self.DirButton = FileButton(self.Setting.Plugin.Context,
-                                        self.Entry,
-                                        True, False)
-            self.Box.pack_start(self.FileButton, False, False, 0)
-            self.Box.pack_start(self.DirButton, False, False, 0)
+        self.FileButton = FileButton(self.Setting.Plugin.Context, self.Entry,
+            self.isDirectory, self.isImage)
+        if self.isImage and has_mate_desktop:
+            size_normal = MateDesktop.DesktopThumbnailSize.NORMAL
+            self.thumbnailer = MateDesktop.DesktopThumbnailFactory.new(size_normal)
+            self.BtnPixmap = None
+            self.NeedUpdate = False
+            self.FileButton.connect ('query-tooltip', self.query_tooltip_callback)
+            self.FileButton.props.has_tooltip = True
+            self.Entry.connect ('query-tooltip', self.query_tooltip_callback)
+            self.Entry.props.has_tooltip = True
         else:
-            self.FileButton = FileButton(self.Setting.Plugin.Context,
-                                         self.Entry,
-                                         self.pickMode == FileStringSetting.DIRECTORY,
-                                         self.isImage)
-            self.Box.pack_start(self.FileButton, False, False, 0)
+            self.thumbnailer = None
+        self.Box.pack_start(self.FileButton, False, False, 0)
+
+    def reload_thumb(self, path):
+        self.NeedUpdate = False
+        if self.thumbnailer:
+           thumb_128, info = get_image_thumbnail(path, self.thumbnailer)
+           if thumb_128:
+              mime_type = info.get_attribute_as_string(Gio.FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+              width, height = get_thumb_annotations (thumb_128, path)
+              w, h = thumb_128.get_width(), thumb_128.get_height()
+              self.BtnPixmap = thumb_128.scale_simple(w/2, h/2, GdkPixbuf.InterpType.BILINEAR)
+
+              size = _("%(width)s pixels by %(height)s pixels") % {'width': width, 'height': height}
+              names = os.path.split(get_normalized_name(path))
+              msg_dict = {'size': size,
+                    'mime': type_map.get(mime_type,_("unknown")),
+                    'folder': names[0],
+                    'name': names[1]}
+              self.Msg =  _("<b>%(name)s</b>\nFolder: %(folder)s\n%(mime)s, %(size)s") % msg_dict
+           else:
+              self.BtnPixmap = None
+              self.Msg = ""
+
+    def GetColumn(self, num):
+        if self.isImage:
+           column = Gtk.TreeViewColumn(self.Setting.ShortDesc)
+           column.props.resizable = True
+           cell_icon = CellRendererImage()
+           cell_icon.props.follow_state = True
+           cell_icon.set_padding(3, 3)
+           column.pack_start(cell_icon, False)
+           column.add_attribute(cell_icon, "text", num)
+
+           cell_name = Gtk.CellRendererText()
+           cell_name.props.width_chars = 30
+           cell_name.props.ellipsize = Pango.EllipsizeMode.START
+           cell_name.props.underline = Pango.Underline.SINGLE
+           column.pack_end(cell_name, True)
+           column.add_attribute(cell_name, "text", num)
+           return (str, column)
+        else:
+           return (str, Gtk.TreeViewColumn(self.Setting.ShortDesc, Gtk.CellRendererText(), text=num))
+
+    def _Read(self):
+        self.Entry.set_text(self.Get())
+        if self.isImage:
+           self.BtnPixmap = None
+           self.NeedUpdate = True
+
+    def _Changed(self):
+        self.Set(self.Entry.get_text())
+        if self.isImage:
+           self.BtnPixmap = None
+           self.NeedUpdate = True
+
+    def query_tooltip_callback (self, widget, x, y, keyboard_mode, tooltip):
+        if self.NeedUpdate:
+           self.reload_thumb(self.Get())
+        if self.BtnPixmap:
+           tooltip.set_icon(self.BtnPixmap)
+           tooltip.set_markup(self.Msg)
+           return True
+        else:
+           return False
 
 class EnumSetting(StockSetting):
 
@@ -1319,6 +1366,7 @@ class KeySetting (EditableActionSetting):
     def _Changed (self):
         self.Set(self.current)
 
+
 class ButtonSetting (EditableActionSetting):
 
     current = ""
@@ -1638,24 +1686,243 @@ class BellSetting (BoolSetting):
         self.Box.pack_start (bell, False, False, 0)
         self.Box.reorder_child (bell, 0)
 
+class CursorStringSetting (StockSetting):
+    def _Init(self):
+        StockSetting._Init(self)
+        self.liststore=Gtk.ListStore(str, str, GdkPixbuf.Pixbuf)
+        self.liststore.set_sort_column_id(0, Gtk.SortType.ASCENDING)
+        self.liststore.set_sort_func(0, self.list_compare_func, None)
+        self.liststore.append([_("Default cursor"), "builtin", None])
+        self.liststore.append(["", "-", None])
+        home_icons = os.path.join(GLib.get_user_config_dir(), HomeCursorDir)
+        for cursordir in [CursorDir, home_icons]:
+            if os.path.isdir(cursordir):
+                for filename in os.listdir(cursordir):
+                    tmpname = os.path.join(cursordir, filename)
+                    fullname = filename
+                    example = "left_ptr"
+                    if os.path.isdir(os.path.join(tmpname, "cursors")):
+                        tmpname = os.path.join(tmpname, "index.theme")
+                        if os.path.isfile(tmpname):
+                            DeskItem = MateDesktop.DesktopItem.new_from_file(tmpname, \
+                                       MateDesktop.DesktopItemLoadFlags.ONLY_IF_EXISTS)
+                            if DeskItem:
+                               readable = DeskItem.get_localestring("Icon Theme/Name")
+                               if readable:
+                                  fullname = readable.strip()
+                               readable = DeskItem.get_string("Icon Theme/Example")
+                               if readable:
+                                  example = readable
+
+                        pixbuf = GetCursorPixmap(filename)
+                        for row in self.liststore:
+                            if row[0]==fullname:
+                                self.liststore.remove(row.iter)
+                                break
+                        self.liststore.append([fullname, filename, pixbuf])
+
+        self.Combo = Gtk.ComboBox.new_with_model(self.liststore)
+        self.Combo.set_row_separator_func(self.separator_func, None)
+
+        cell_icon = Gtk.CellRendererPixbuf()
+        cell_icon.set_padding(2, 0)
+        self.Combo.pack_start(cell_icon, False)
+        self.Combo.add_attribute(cell_icon, "pixbuf", 2)
+
+        cell_name = Gtk.CellRendererText()
+        self.Combo.pack_end(cell_name, True)
+        self.Combo.add_attribute(cell_name, "text", 0)
+
+        self.Combo.connect("changed", self.Changed)
+
+        self.Widget = self.Combo
+        self.Box.pack_start(self.Widget, True, True, 0)
+    def separator_func(self, treemodel, iter, user_data):
+        a = self.liststore.get(iter, 1)
+        if a[0]=="-":
+            return True
+        else:
+            return False
+
+    def list_compare_func(self, treemodel, iter1, iter2, user_data):
+        a = self.liststore.get(iter1, 0,1)
+        b = self.liststore.get(iter2, 0,1)
+        if a[1]=="builtin":
+            return -1
+        else:
+            if a[0] == b[0]:
+                return 0
+            if a[0] < b[0]:
+                return -1
+            else:
+                return 1
+
+    def _Read(self):
+        active=self.Get()
+        for row in self.liststore:
+            if active in row[1]:
+                self.Combo.set_active_iter(row.iter)
+                break
+    def _Changed(self):
+        iter = self.Combo.get_active_iter()
+        if iter:
+            data = self.liststore.get_value(iter, 1)
+            self.Set(data)
+
+
+class WallpaperStringSetting (StringSetting):
+    def _Init(self):
+        StringSetting._Init(self)
+        self.Msg = ""
+        self.okButton = None
+        self.Button = Gtk.Button()
+        self.Button.set_tooltip_text(_("Browse..."))
+        self.Button.set_image(Gtk.Image.new_from_icon_name("document-open",
+                                                    Gtk.IconSize.BUTTON))
+        if has_mate_desktop:
+            size_normal = MateDesktop.DesktopThumbnailSize.NORMAL
+            self.thumbnailer = MateDesktop.DesktopThumbnailFactory.new(size_normal)
+            self.BtnPixmap = None
+            self.NeedUpdate = False
+            self.Button.connect ('query-tooltip', self.query_tooltip_callback)
+            self.Button.props.has_tooltip = True
+            self.Entry.connect ('query-tooltip', self.query_tooltip_callback)
+            self.Entry.props.has_tooltip = True
+        else:
+            self.thumbnailer = None
+
+        self.Button.connect('clicked', self.on_button_clicked)
+        self.Box.pack_start(self.Button, False, False, 0)
+
+    def on_button_clicked(self, widget):
+        dlg = Gtk.Dialog (title=_("Edit %s") % self.Setting.ShortDesc,
+                          transient_for=widget.get_toplevel ())
+        dlg.set_position (Gtk.WindowPosition.CENTER_ALWAYS)
+        dlg.set_icon (self.Widget.get_toplevel ().get_icon ())
+        dlg.set_modal (True)
+
+        button = dlg.add_button (_("_Cancel"), Gtk.ResponseType.CANCEL)
+        button.set_image (Gtk.Image.new_from_icon_name ("gtk-cancel",
+                                                        Gtk.IconSize.BUTTON))
+        button = dlg.add_button (_("_OK"), Gtk.ResponseType.OK)
+        button.set_image (Gtk.Image.new_from_icon_name ("gtk-ok",
+                                                        Gtk.IconSize.BUTTON))
+        self.okButton = button
+        self.okButton.set_sensitive(False)
+        button.grab_default ()
+        dlg.set_default_response (Gtk.ResponseType.OK)
+
+        mainBox = Gtk.Box (orientation=Gtk.Orientation.VERTICAL)
+        mainBox.set_size_request(500, 500)
+
+        if GTK_VERSION >= (3, 0, 0):
+            mainBox.props.margin = 10
+            dlg.vbox.pack_start (mainBox, True, True, 0)
+        else:
+            alignment = Gtk.Alignment ()
+            alignment.set_padding (10, 10, 10, 10)
+            alignment.add (mainBox)
+            dlg.vbox.pack_start (alignment, True, True, 0)
+
+        self.CurrentName = self.Get()
+
+        wll = WallpaperPeekWindow(self.CurrentName, self.WallChanged, dlg)
+        mainBox.pack_start (wll, True, True, 0)
+
+        dlg.vbox.show_all ()
+        ret = dlg.run ()
+        if ret == Gtk.ResponseType.OK:
+           self.Entry.set_text(self.CurrentName)
+           self.Changed()
+
+        dlg.destroy ()
+
+    def reload_thumb(self, path):
+        self.NeedUpdate = False
+        if self.thumbnailer:
+           thumb_128, info = get_image_thumbnail(path, self.thumbnailer)
+           if thumb_128:
+              mime_type = info.get_attribute_as_string(Gio.FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+              width, height = get_thumb_annotations (thumb_128, path)
+              w, h = thumb_128.get_width(), thumb_128.get_height()
+              self.BtnPixmap = thumb_128.scale_simple(w/2, h/2, GdkPixbuf.InterpType.BILINEAR)
+
+              size = _("%(width)s pixels by %(height)s pixels") % {'width': width, 'height': height}
+              names = os.path.split(get_normalized_name(path))
+              msg_dict = {'size': size,
+                    'mime': type_map.get(mime_type,_("unknown")),
+                    'folder': names[0],
+                    'name': names[1]}
+              self.Msg =  _("<b>%(name)s</b>\nFolder: %(folder)s\n%(mime)s, %(size)s") % msg_dict
+           else:
+              self.BtnPixmap = None
+              self.Msg = ""
+
+    def GetColumn(self, num):
+        column = Gtk.TreeViewColumn(self.Setting.ShortDesc)
+
+        cell_icon = CellRendererImage()
+        column.props.resizable = True
+        cell_icon.props.follow_state = True
+        cell_icon.set_padding(3, 3)
+        column.pack_start(cell_icon, False)
+        column.add_attribute(cell_icon, "text", num)
+
+        cell_name = Gtk.CellRendererText()
+        cell_name.props.width_chars = 30
+        cell_name.props.ellipsize = Pango.EllipsizeMode.START
+        cell_name.props.underline = Pango.Underline.SINGLE
+        column.pack_end(cell_name, True)
+        column.add_attribute(cell_name, "text", num)
+
+        return (str, column)
+
+    def WallChanged(self, imagename=None):
+        if imagename:
+           self.CurrentName = imagename
+           self.okButton.set_sensitive(True)
+        else:
+           self.CurrentName = ""
+           self.okButton.set_sensitive(False)
+
+    def _Read(self):
+        self.Entry.set_text(self.Get())
+        self.BtnPixmap = None
+        self.NeedUpdate = True
+
+    def _Changed(self):
+        self.Set(self.Entry.get_text())
+        self.BtnPixmap = None
+        self.NeedUpdate = True
+
+    def query_tooltip_callback (self, widget, x, y, keyboard_mode, tooltip):
+        if self.NeedUpdate:
+           self.reload_thumb(self.Get())
+        if self.BtnPixmap:
+           tooltip.set_icon(self.BtnPixmap)
+           tooltip.set_markup(self.Msg)
+           return True
+        else:
+           return False
+
+
+
 def MakeStringSetting (setting, List=False):
 
     if setting.Hints:
-        if "path" in setting.Hints:
-            return FileStringSetting (setting,
-                                      pickMode=FileStringSetting.PATH,
-                                      isImage=("image" in setting.Hints),
-                                      List=List)
-        elif "directory" in setting.Hints:
-            return FileStringSetting (setting,
-                                      pickMode=FileStringSetting.DIRECTORY,
-                                      List=List)
-        elif "file" in setting.Hints:
-            return FileStringSetting (setting,
-                                      isImage=("image" in setting.Hints),
-                                      List=List)
+        if "file" in setting.Hints:
+            if "cursors" in setting.Hints:
+                return CursorStringSetting (setting, List=List)
+            elif "image" in setting.Hints:
+                return FileStringSetting (setting, isImage=True, List=List)
+            elif "wallpaper" in setting.Hints:
+                return WallpaperStringSetting (setting, List=List)
+            else:
+                return FileStringSetting (setting, List=List)
         elif "family" in setting.Hints:
             return FamilyStringSetting (setting)
+        elif "directory" in setting.Hints:
+            return FileStringSetting (setting, isDirectory=True, List=List)
         else:
             return StringSetting (setting, List=List)
     elif (List and setting.Info[1][2]) or \
