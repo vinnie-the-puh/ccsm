@@ -619,5 +619,33 @@ msgstr ""
 "\n"
 " Ваш фильтр \"<b>%s</b>\" не совпал ни с чем.</span>"
 
+msgid "Default cursor"
+msgstr "Указатель по умолчанию"
+
+msgid ""
+"The Quick Brown Fox Jumps Over The Lazy Dog"
+msgstr ""
+"В чащах юга жил бы цитрус? Да, но фальшивый экземпляр!"
+
 msgid "Configure Compiz with CompizConfig"
 msgstr "Настройка Compiz с помощью CompizConfig"
+
+#, python-format
+msgid "%(width)s pixels by %(height)s pixels"
+msgstr "%(width)s пикселей на %(height)s пикселей"
+
+#, python-format
+msgid "<b>%(name)s</b>\n%(mime)s, %(size)s\nFolder: %(folder)s\nArtist: %(artist)s"
+msgstr "<b>%(name)s</b>\n%(mime)s, %(size)s\nПапка: %(folder)s\nАртист: %(artist)s"
+
+msgid "PNG image"
+msgstr "Изображение PNG"
+
+msgid "JPEG image"
+msgstr "Изображение JPEG"
+
+msgid "SVG image"
+msgstr "Изображение SVG"
+
+msgid "<b>%(name)s</b>\nFolder: %(folder)s\n%(mime)s, %(size)s"
+msgstr "<b>%(name)s</b>\nПапка: %(folder)s\n%(mime)s, %(size)s"
