@@ -1,0 +1,108 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, 
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+#
+# Authors: Quinn Storm (quinn@beryl-project.org)
+#          Patrick Niklaus (patrick.niklaus@student.kit.edu)
+# Copyright (C) 2007 Quinn Storm
+
+from optparse import OptionParser
+import gi
+gi.require_version('Pango', '1.0')
+gi.require_version('PangoCairo', '1.0')
+gi.require_version('Rsvg', '2.0')
+gi.require_version('Gtk', '2.0')
+gi.require_version('Gdk', '2.0')
+gi.require_version('MateDesktop', '2.0')
+
+from gi.repository import Gio, Gtk, Gdk
+import os
+import sys
+import signal
+import compizconfig
+import ccm
+from ccm.Utils import GlobalUpdater
+from ccm.Constants import Version
+from ccm.Utils import GTK_VERSION
+
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+def activate_event(application, *mainWinArgs):
+    if GTK_VERSION >= (3, 6, 0):
+        prevWin = application.get_active_window()
+    else:
+        prevWin = None
+        if hasattr(application, "activeWindow"):
+            prevWin = application.activeWindow
+
+    if prevWin:
+        prevWin.present()
+        return
+
+    mainWin = ccm.MainWin(*mainWinArgs)
+    if GTK_VERSION >= (3, 6, 0):
+        application.add_window(mainWin)
+    else:
+        application.activeWindow = mainWin
+        mainWin.Application = application
+        application.hold()
+    idle = ccm.IdleSettingsParser(context, mainWin)
+    mainWin.show_all()
+
+plugin   = None
+category = None
+parser   = OptionParser()
+parser.add_option("-p", "--plugin", dest = "plugin",
+                  help = "Directly jump to the page of PLUGIN",
+                  metavar = "PLUGIN")
+parser.add_option("-c", "--category", dest = "category",
+                  help = "Directly jump to CATEGORY",
+                  metavar = "CATEGORY")
+parser.add_option("-v", "--version", dest = "version",
+                  action = "store_true",
+                  help = "Version")
+(options, args) = parser.parse_args()
+if options.version:
+    print("CCSM " + Version)
+    sys.exit(0)
+if options.plugin:
+    plugin = options.plugin
+if options.category:
+    category = options.category
+
+# Compiz 0.9.x and Compiz 0.8.x compatibility.
+try:
+    context = compizconfig.Context(ccm.GetDefaultScreenNum())
+except (AttributeError, TypeError):
+    context = compizconfig.Context(ccm.GetScreenNums())
+GlobalUpdater.SetContext(context)
+
+if GTK_VERSION >= (3, 6, 0):
+    application = Gtk.Application(application_id="org.compiz.ccsm",
+                                  flags=Gio.ApplicationFlags.FLAGS_NONE)
+else:
+    application = Gio.Application(application_id="org.compiz.ccsm",
+                                  flags=Gio.ApplicationFlags.FLAGS_NONE)
+application.connect("activate", activate_event, context, plugin, category)
+try:
+    application.register()
+except TypeError:
+    application.register(None)
+
+if application.get_is_remote():
+    sys.stderr.write("Another CCSM instance is already running...\n")
+    Gdk.notify_startup_complete()
+application.run(sys.argv)
