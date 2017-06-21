@@ -26,6 +26,8 @@ gi.require_version('PangoCairo', '1.0')
 gi.require_version('Rsvg', '2.0')
 gi.require_version('Gtk', '@gtkver@')
 gi.require_version('Gdk', '@gtkver@')
+gi.require_version('MateDesktop', '2.0')
+
 from gi.repository import Gio, Gtk, Gdk
 import os
 import sys
