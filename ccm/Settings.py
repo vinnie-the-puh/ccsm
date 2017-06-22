@@ -42,7 +42,6 @@ _ = gettext.gettext
 
 NAItemText = _("N/A")
 
-
 class Setting(object):
 
     NoneValue = ''
@@ -242,7 +241,7 @@ class FamilyStringSetting(StockSetting):
 
         self.PreviewEntry = Gtk.Entry()
         self.PreviewEntry.set_text(_("The Quick Brown Fox Jumps Over The Lazy Dog"))
-        self.PreviewEntry.set_property("editable", False)
+        self.PreviewEntry.props.editable = False
 
         self.font_button = Gtk.FontButton()
         self.font_button.set_use_font(True)
@@ -347,14 +346,26 @@ class FileStringSetting(StringSetting):
         else:
            return (str, Gtk.TreeViewColumn(self.Setting.ShortDesc, Gtk.CellRendererText(), text=num))
 
+    def _SetFilePath(self, path):
+        if self.isImage:
+           norm_path = get_normalized_name(path)
+           if norm_path:
+              self.FileButton.set_path(norm_path)
+        else:
+           self.FileButton.set_path(path)
+
     def _Read(self):
-        self.Entry.set_text(self.Get())
+        path = self.Get()
+        self.Entry.set_text(path)
+        self._SetFilePath(path)
         if self.isImage:
            self.BtnPixmap = None
            self.NeedUpdate = True
 
     def _Changed(self):
-        self.Set(self.Entry.get_text())
+        path = self.Entry.get_text()
+        self.Set(path)
+        self._SetFilePath(path)
         if self.isImage:
            self.BtnPixmap = None
            self.NeedUpdate = True
@@ -1695,7 +1706,7 @@ class CursorStringSetting (StockSetting):
         self.liststore.append([_("Default cursor"), "builtin", None])
         self.liststore.append(["", "-", None])
         home_icons = os.path.join(GLib.get_user_config_dir(), HomeCursorDir)
-        for cursordir in [CursorDir, home_icons]:
+        for cursordir in [home_icons, CursorDir]:
             if os.path.isdir(cursordir):
                 for filename in os.listdir(cursordir):
                     tmpname = os.path.join(cursordir, filename)
@@ -1703,7 +1714,7 @@ class CursorStringSetting (StockSetting):
                     example = "left_ptr"
                     if os.path.isdir(os.path.join(tmpname, "cursors")):
                         tmpname = os.path.join(tmpname, "index.theme")
-                        if os.path.isfile(tmpname):
+                        if os.path.isfile(tmpname) and has_mate_desktop:
                             DeskItem = MateDesktop.DesktopItem.new_from_file(tmpname, \
                                        MateDesktop.DesktopItemLoadFlags.ONLY_IF_EXISTS)
                             if DeskItem:
@@ -1715,11 +1726,13 @@ class CursorStringSetting (StockSetting):
                                   example = readable
 
                         pixbuf = GetCursorPixmap(filename)
+                        found = False
                         for row in self.liststore:
                             if row[0]==fullname:
-                                self.liststore.remove(row.iter)
+                                found = True
                                 break
-                        self.liststore.append([fullname, filename, pixbuf])
+                        if not found:
+                            self.liststore.append([fullname, filename, pixbuf])
 
         self.Combo = Gtk.ComboBox.new_with_model(self.liststore)
         self.Combo.set_row_separator_func(self.separator_func, None)
@@ -1768,7 +1781,6 @@ class CursorStringSetting (StockSetting):
         if iter:
             data = self.liststore.get_value(iter, 1)
             self.Set(data)
-
 
 class WallpaperStringSetting (StringSetting):
     def _Init(self):
@@ -1904,8 +1916,6 @@ class WallpaperStringSetting (StringSetting):
            return True
         else:
            return False
-
-
 
 def MakeStringSetting (setting, List=False):
 

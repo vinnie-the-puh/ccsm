@@ -104,6 +104,16 @@ def get_normalized_name(path):
        imgpath = None
     return imgpath
 
+def get_sortcut_name(path):
+    imgpath = path
+    if len(path)>0:
+      home_path = os.path.join(GLib.get_user_config_dir(), HomeImageDir)
+      if path.startswith(ImageDir):
+         imgpath = os.path.relpath(path, ImageDir)
+      elif path.startswith(home_path):
+         imgpath = os.path.relpath(path, home_path)
+    return imgpath
+
 def get_thumb_annotations (thumb, filename):
    orig_width  = 0
    orig_height = 0
@@ -379,7 +389,7 @@ class CellRendererImage(Gtk.CellRendererPixbuf):
               w, h = thumb_128.get_width(), thumb_128.get_height()
               thumb_64 = thumb_128.scale_simple(w/2, h/2, GdkPixbuf.InterpType.BILINEAR)
 
-        self.set_property('pixbuf', thumb_64)
+        self.props.pixbuf = thumb_64
 
     def do_set_property(self, property, value):
         if property.name == 'text':
@@ -1821,8 +1831,6 @@ class FileButton (Gtk.Button):
 
     def set_path (self, value):
         self._path = value
-        self._entry.set_text (value)
-        self._entry.activate ()
 
     def create_filter(self):
         filter = Gtk.FileFilter ()
@@ -1882,15 +1890,15 @@ class FileButton (Gtk.Button):
         else:
             chooser.set_filter (self.create_filter ())
 
+        if self._image:
+            chooser.set_use_preview_label (False)
+            chooser.set_preview_widget (Gtk.Image())
+            chooser.connect ("selection-changed", self.update_preview)
+
         if self._path and os.path.exists (self._path):
             chooser.set_filename (self._path)
         else:
             chooser.set_current_folder (os.environ.get("HOME"))
-
-        if self._image:
-            chooser.set_use_preview_label (False)
-            chooser.set_preview_widget (Gtk.Image ())
-            chooser.connect ("selection-changed", self.update_preview)
 
         button = chooser.add_button (_("_Cancel"), Gtk.ResponseType.CANCEL)
         button.set_image (Gtk.Image.new_from_icon_name ("gtk-cancel",
@@ -1907,7 +1915,13 @@ class FileButton (Gtk.Button):
         chooser.destroy ()
         if ret == Gtk.ResponseType.OK:
             if self._directory or self.check_type (filename):
+                if self._image:
+                   path = get_sortcut_name(filename)
+                else:
+                   path = filename
                 self.set_path (filename)
+                self._entry.set_text(path)
+                self._entry.activate ()
 
 # About Dialog
 #
@@ -2247,7 +2261,7 @@ class WallpaperPeekWindow(Gtk.ScrolledWindow):
 
         self.view = Gtk.IconView(model=self.store)
         self.view.set_item_orientation(Gtk.Orientation.VERTICAL)
-        self.view.set_property("has_tooltip", True)
+        self.view.props.has_tooltip = True
         self.view.set_tooltip_column(COL_INFO)
         self.view.props.item_padding = 10
         self.view.props.margin = 3
@@ -2265,7 +2279,7 @@ class WallpaperPeekWindow(Gtk.ScrolledWindow):
         cell.props.yalign = 0.0
         cell.props.xpad = 0
         cell.props.ypad = 0
-        cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+        cell.props.ellipsize = Pango.EllipsizeMode.END
         self.view.pack_start(cell, False)
         self.view.add_attribute(cell, "markup", COL_INFOTEXT)
 
